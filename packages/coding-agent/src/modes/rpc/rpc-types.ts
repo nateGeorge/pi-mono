@@ -64,6 +64,9 @@ export type RpcCommand =
 	// Messages
 	| { id?: string; type: "get_messages" }
 
+	// Reload
+	| { id?: string; type: "reload" }
+
 	// Commands (available for invocation via prompt)
 	| { id?: string; type: "get_commands" };
 
@@ -190,6 +193,9 @@ export type RpcResponse =
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
+
+	// Reload
+	| { id?: string; type: "response"; command: "reload"; success: true }
 
 	// Commands
 	| {

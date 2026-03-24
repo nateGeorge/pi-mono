@@ -564,6 +564,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntimeHost): Promise<
 				return success(id, "get_messages", { messages: session.messages });
 			}
 
+			case "reload": {
+				await session.reload();
+				return success(id, "reload");
+			}
+
 			// =================================================================
 			// Commands (available for invocation via prompt)
 			// =================================================================
