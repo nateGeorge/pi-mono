@@ -395,28 +395,71 @@ export function findCutPoint(
 		return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
 	}
 
-	// Walk backwards from newest, accumulating estimated message sizes
+	// Build a map of entry index → cumulative input tokens from assistant usage data.
+	// Each assistant message's usage.input represents the total context size at that point,
+	// which is far more accurate than the chars/4 heuristic in estimateTokens().
+	// Only use assistant messages AFTER the last compaction entry in the range,
+	// since pre-compaction usage reflects the old (larger) context.
+	let usageScanStart = startIndex;
+	for (let i = endIndex - 1; i >= startIndex; i--) {
+		if (entries[i].type === "compaction") {
+			usageScanStart = i + 1;
+			break;
+		}
+	}
+	const assistantInputTokens: { index: number; inputTokens: number }[] = [];
+	for (let i = usageScanStart; i < endIndex; i++) {
+		const entry = entries[i];
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			const usage = (entry.message as AssistantMessage).usage;
+			if (usage && typeof usage.input === "number" && usage.input > 0) {
+				assistantInputTokens.push({ index: i, inputTokens: usage.input });
+			}
+		}
+	}
+
+	// Walk backwards from newest, accumulating token sizes
 	let accumulatedTokens = 0;
 	let cutIndex = cutPoints[0]; // Default: keep from first message (not header)
 
-	for (let i = endIndex - 1; i >= startIndex; i--) {
-		const entry = entries[i];
-		if (entry.type !== "message") continue;
+	if (assistantInputTokens.length >= 2) {
+		// Use real token data: walk backward through assistant checkpoints.
+		// The last assistant's input tokens = total context at end.
+		// Delta between consecutive assistants = tokens added between them.
+		const lastAssistant = assistantInputTokens[assistantInputTokens.length - 1];
 
-		// Estimate this message's size
-		const messageTokens = estimateTokens(entry.message);
-		accumulatedTokens += messageTokens;
+		for (let a = assistantInputTokens.length - 1; a >= 0; a--) {
+			const tokensFromHereToEnd = lastAssistant.inputTokens - assistantInputTokens[a].inputTokens;
 
-		// Check if we've exceeded the budget
-		if (accumulatedTokens >= keepRecentTokens) {
-			// Find the closest valid cut point at or after this entry
-			for (let c = 0; c < cutPoints.length; c++) {
-				if (cutPoints[c] >= i) {
-					cutIndex = cutPoints[c];
-					break;
+			if (tokensFromHereToEnd >= keepRecentTokens) {
+				// Cut at the closest valid cut point at or after this assistant's index
+				for (let c = 0; c < cutPoints.length; c++) {
+					if (cutPoints[c] >= assistantInputTokens[a].index) {
+						cutIndex = cutPoints[c];
+						break;
+					}
 				}
+				break;
 			}
-			break;
+		}
+	} else {
+		// Fallback to chars/4 estimate when we don't have enough usage data
+		for (let i = endIndex - 1; i >= startIndex; i--) {
+			const entry = entries[i];
+			if (entry.type !== "message") continue;
+
+			const messageTokens = estimateTokens(entry.message);
+			accumulatedTokens += messageTokens;
+
+			if (accumulatedTokens >= keepRecentTokens) {
+				for (let c = 0; c < cutPoints.length; c++) {
+					if (cutPoints[c] >= i) {
+						cutIndex = cutPoints[c];
+						break;
+					}
+				}
+				break;
+			}
 		}
 	}
 
