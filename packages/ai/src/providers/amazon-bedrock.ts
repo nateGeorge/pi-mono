@@ -671,12 +671,16 @@ function convertMessages(
 		}
 	}
 
-	// Add cache points to all conversation messages for supported Claude models.
-	// Like Claude Code, we mark every message so the API can cache the entire
-	// conversation prefix. Bedrock allows up to 4 explicit cache points and
-	// silently ignores extras — the API picks the best subset.
+	// Add cache points to the last 2 conversation messages.
+	// Bedrock/Anthropic allows exactly 4 cache_control blocks per request. We use:
+	//   1. System prompt (added above)
+	//   2. Last tool definition (added in convertToolConfig)
+	//   3-4. Last 2 conversation messages (added here)
 	if (cacheRetention !== "none" && supportsPromptCaching(model) && result.length > 0) {
-		for (const message of result) {
+		const maxMessageBreakpoints = 2;
+		let marked = 0;
+		for (let idx = result.length - 1; idx >= 0 && marked < maxMessageBreakpoints; idx--) {
+			const message = result[idx];
 			if (message.content) {
 				(message.content as ContentBlock[]).push({
 					cachePoint: {
@@ -684,6 +688,7 @@ function convertMessages(
 						...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}),
 					},
 				});
+				marked++;
 			}
 		}
 	}
