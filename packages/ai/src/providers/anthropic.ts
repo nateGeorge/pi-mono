@@ -838,13 +838,18 @@ function convertMessages(
 		}
 	}
 
-	// Add cache_control breakpoints to conversation messages.
-	// Like Claude Code, we mark the last block of each message so the API can
-	// cache the entire conversation prefix. Anthropic allows up to 4 explicit
-	// breakpoints, but extra ones are silently ignored — the API picks the best
-	// subset. We mark every message to maximize prefix caching across turns.
+	// Add cache_control breakpoints to the last 2 conversation messages.
+	// Anthropic allows exactly 4 cache_control blocks per request. We use:
+	//   1. System prompt (added above)
+	//   2. Last tool definition (added in convertTools)
+	//   3-4. Last 2 conversation messages (added here)
+	// This caches the static prefix (system+tools) and recent conversation.
 	if (cacheControl && params.length > 0) {
-		for (const message of params) {
+		// Walk backwards and mark the last 2 messages (budget = 4 total - 1 system - 1 tools)
+		const maxMessageBreakpoints = 2;
+		let marked = 0;
+		for (let idx = params.length - 1; idx >= 0 && marked < maxMessageBreakpoints; idx--) {
+			const message = params[idx];
 			if (Array.isArray(message.content)) {
 				const lastBlock = message.content[message.content.length - 1];
 				if (
@@ -855,6 +860,7 @@ function convertMessages(
 						lastBlock.type === "tool_use")
 				) {
 					(lastBlock as any).cache_control = cacheControl;
+					marked++;
 				}
 			} else if (typeof message.content === "string") {
 				message.content = [
@@ -864,6 +870,7 @@ function convertMessages(
 						cache_control: cacheControl,
 					},
 				] as any;
+				marked++;
 			}
 		}
 	}
