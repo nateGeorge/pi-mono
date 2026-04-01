@@ -157,7 +157,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
 				messages: convertMessages(context, model, cacheRetention),
 				system: buildSystemPrompt(context.systemPrompt, model, cacheRetention),
 				inferenceConfig: { maxTokens: options.maxTokens, temperature: options.temperature },
-				toolConfig: convertToolConfig(context.tools, options.toolChoice),
+				toolConfig: convertToolConfig(context.tools, options.toolChoice, cacheRetention, model),
 				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
 				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 			};
@@ -452,14 +452,15 @@ function mapThinkingLevelToEffort(
 
 /**
  * Resolve cache retention preference.
- * Defaults to "short" and uses PI_CACHE_RETENTION for backward compatibility.
+ * Defaults to "short" (5-min TTL). Set PI_CACHE_RETENTION=long for 1h TTL
+ * (higher cache-write cost but survives longer pauses), or "none" to disable.
  */
 function resolveCacheRetention(cacheRetention?: CacheRetention): CacheRetention {
 	if (cacheRetention) {
 		return cacheRetention;
 	}
-	if (typeof process !== "undefined" && process.env.PI_CACHE_RETENTION === "long") {
-		return "long";
+	if (typeof process !== "undefined" && process.env.PI_CACHE_RETENTION) {
+		return process.env.PI_CACHE_RETENTION as CacheRetention;
 	}
 	return "short";
 }
@@ -670,16 +671,20 @@ function convertMessages(
 		}
 	}
 
-	// Add cache point to the last user message for supported Claude models when caching is enabled
+	// Add cache points to all conversation messages for supported Claude models.
+	// Like Claude Code, we mark every message so the API can cache the entire
+	// conversation prefix. Bedrock allows up to 4 explicit cache points and
+	// silently ignores extras — the API picks the best subset.
 	if (cacheRetention !== "none" && supportsPromptCaching(model) && result.length > 0) {
-		const lastMessage = result[result.length - 1];
-		if (lastMessage.role === ConversationRole.USER && lastMessage.content) {
-			(lastMessage.content as ContentBlock[]).push({
-				cachePoint: {
-					type: CachePointType.DEFAULT,
-					...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}),
-				},
-			});
+		for (const message of result) {
+			if (message.content) {
+				(message.content as ContentBlock[]).push({
+					cachePoint: {
+						type: CachePointType.DEFAULT,
+						...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}),
+					},
+				});
+			}
 		}
 	}
 
@@ -689,6 +694,8 @@ function convertMessages(
 function convertToolConfig(
 	tools: Tool[] | undefined,
 	toolChoice: BedrockOptions["toolChoice"],
+	cacheRetention?: CacheRetention,
+	model?: Model<"bedrock-converse-stream">,
 ): ToolConfiguration | undefined {
 	if (!tools?.length || toolChoice === "none") return undefined;
 
@@ -699,6 +706,22 @@ function convertToolConfig(
 			inputSchema: { json: tool.parameters },
 		},
 	}));
+
+	// Cache the last tool definition — tools are static and repeated every request,
+	// so this cache point lets the API cache the entire tools + system prefix.
+	if (
+		cacheRetention &&
+		cacheRetention !== "none" &&
+		model &&
+		supportsPromptCaching(model) &&
+		bedrockTools.length > 0
+	) {
+		const lastTool = bedrockTools[bedrockTools.length - 1] as any;
+		lastTool.cachePoint = {
+			type: CachePointType.DEFAULT,
+			...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}),
+		};
+	}
 
 	let bedrockToolChoice: ToolChoice | undefined;
 	switch (toolChoice) {
