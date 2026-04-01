@@ -34,14 +34,15 @@ import { transformMessages } from "./transform-messages.js";
 
 /**
  * Resolve cache retention preference.
- * Defaults to "short" and uses PI_CACHE_RETENTION for backward compatibility.
+ * Defaults to "short" (5-min TTL). Set PI_CACHE_RETENTION=long for 1h TTL
+ * (higher cache-write cost but survives longer pauses), or "none" to disable.
  */
 function resolveCacheRetention(cacheRetention?: CacheRetention): CacheRetention {
 	if (cacheRetention) {
 		return cacheRetention;
 	}
-	if (typeof process !== "undefined" && process.env.PI_CACHE_RETENTION === "long") {
-		return "long";
+	if (typeof process !== "undefined" && process.env.PI_CACHE_RETENTION) {
+		return process.env.PI_CACHE_RETENTION as CacheRetention;
 	}
 	return "short";
 }
@@ -651,7 +652,7 @@ function buildParams(
 	}
 
 	if (context.tools) {
-		params.tools = convertTools(context.tools, isOAuthToken);
+		params.tools = convertTools(context.tools, isOAuthToken, cacheControl);
 	}
 
 	// Configure thinking mode: adaptive (Opus 4.6 and Sonnet 4.6),
@@ -837,23 +838,29 @@ function convertMessages(
 		}
 	}
 
-	// Add cache_control to the last user message to cache conversation history
+	// Add cache_control breakpoints to conversation messages.
+	// Like Claude Code, we mark the last block of each message so the API can
+	// cache the entire conversation prefix. Anthropic allows up to 4 explicit
+	// breakpoints, but extra ones are silently ignored — the API picks the best
+	// subset. We mark every message to maximize prefix caching across turns.
 	if (cacheControl && params.length > 0) {
-		const lastMessage = params[params.length - 1];
-		if (lastMessage.role === "user") {
-			if (Array.isArray(lastMessage.content)) {
-				const lastBlock = lastMessage.content[lastMessage.content.length - 1];
+		for (const message of params) {
+			if (Array.isArray(message.content)) {
+				const lastBlock = message.content[message.content.length - 1];
 				if (
 					lastBlock &&
-					(lastBlock.type === "text" || lastBlock.type === "image" || lastBlock.type === "tool_result")
+					(lastBlock.type === "text" ||
+						lastBlock.type === "image" ||
+						lastBlock.type === "tool_result" ||
+						lastBlock.type === "tool_use")
 				) {
 					(lastBlock as any).cache_control = cacheControl;
 				}
-			} else if (typeof lastMessage.content === "string") {
-				lastMessage.content = [
+			} else if (typeof message.content === "string") {
+				message.content = [
 					{
 						type: "text",
-						text: lastMessage.content,
+						text: message.content,
 						cache_control: cacheControl,
 					},
 				] as any;
@@ -864,13 +871,17 @@ function convertMessages(
 	return params;
 }
 
-function convertTools(tools: Tool[], isOAuthToken: boolean): Anthropic.Messages.Tool[] {
+function convertTools(
+	tools: Tool[],
+	isOAuthToken: boolean,
+	cacheControl?: { type: "ephemeral"; ttl?: "1h" },
+): Anthropic.Messages.Tool[] {
 	if (!tools) return [];
 
-	return tools.map((tool) => {
+	return tools.map((tool, index) => {
 		const jsonSchema = tool.parameters as any; // TypeBox already generates JSON Schema
 
-		return {
+		const toolObj: Anthropic.Messages.Tool = {
 			name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
 			description: tool.description,
 			input_schema: {
@@ -879,6 +890,15 @@ function convertTools(tools: Tool[], isOAuthToken: boolean): Anthropic.Messages.
 				required: jsonSchema.required || [],
 			},
 		};
+
+		// Cache the last tool definition — tools are static and repeated every request,
+		// so this breakpoint lets the API cache the entire tools + system prefix.
+		// Matches Claude Code's approach of caching tool schemas.
+		if (cacheControl && index === tools.length - 1) {
+			(toolObj as any).cache_control = cacheControl;
+		}
+
+		return toolObj;
 	});
 }
 
