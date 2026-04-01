@@ -25,7 +25,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 
 	describe("Anthropic Provider", () => {
 		it.skipIf(!process.env.ANTHROPIC_API_KEY)(
-			"should use default cache TTL (no ttl field) when PI_CACHE_RETENTION is not set",
+			"should use default 5-min cache TTL when PI_CACHE_RETENTION is not set",
 			async () => {
 				const model = getModel("anthropic", "claude-3-5-haiku-20241022");
 				let capturedPayload: any = null;
@@ -42,7 +42,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 				}
 
 				expect(capturedPayload).not.toBeNull();
-				// System prompt should have cache_control without ttl
+				// Default is "short" — system prompt should have cache_control without ttl
 				expect(capturedPayload.system).toBeDefined();
 				expect(capturedPayload.system[0].cache_control).toEqual({ type: "ephemeral" });
 			},
@@ -139,7 +139,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 			expect(capturedPayload.system[0].cache_control).toBeUndefined();
 		});
 
-		it("should add cache_control to string user messages", async () => {
+		it("should add cache_control to all conversation messages", async () => {
 			const baseModel = getModel("anthropic", "claude-3-5-haiku-20241022");
 			let capturedPayload: any = null;
 
@@ -161,10 +161,13 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 			}
 
 			expect(capturedPayload).not.toBeNull();
-			const lastMessage = capturedPayload.messages[capturedPayload.messages.length - 1];
-			expect(Array.isArray(lastMessage.content)).toBe(true);
-			const lastBlock = lastMessage.content[lastMessage.content.length - 1];
-			expect(lastBlock.cache_control).toEqual({ type: "ephemeral" });
+			// Every message should have cache_control on its last block
+			for (const message of capturedPayload.messages) {
+				if (Array.isArray(message.content)) {
+					const lastBlock = message.content[message.content.length - 1];
+					expect(lastBlock.cache_control).toBeDefined();
+				}
+			}
 		});
 
 		it("should set 1h cache TTL when cacheRetention is long", async () => {

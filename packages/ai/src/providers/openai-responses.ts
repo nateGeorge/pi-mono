@@ -22,14 +22,15 @@ const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"
 
 /**
  * Resolve cache retention preference.
- * Defaults to "short" and uses PI_CACHE_RETENTION for backward compatibility.
+ * Defaults to "short". Set PI_CACHE_RETENTION=long for extended retention
+ * (24h on OpenAI direct API), or "none" to disable.
  */
 function resolveCacheRetention(cacheRetention?: CacheRetention): CacheRetention {
 	if (cacheRetention) {
 		return cacheRetention;
 	}
-	if (typeof process !== "undefined" && process.env.PI_CACHE_RETENTION === "long") {
-		return "long";
+	if (typeof process !== "undefined" && process.env.PI_CACHE_RETENTION) {
+		return process.env.PI_CACHE_RETENTION as CacheRetention;
 	}
 	return "short";
 }
