@@ -670,16 +670,25 @@ function convertMessages(
 		}
 	}
 
-	// Add cache point to the last user message for supported Claude models when caching is enabled
+	// Add cache points to the last 2 conversation messages.
+	// Bedrock/Anthropic allows exactly 4 cache_control blocks per request. We use:
+	//   1. System prompt (added above)
+	//   2. Last tool definition (added in convertToolConfig)
+	//   3-4. Last 2 conversation messages (added here)
 	if (cacheRetention !== "none" && supportsPromptCaching(model) && result.length > 0) {
-		const lastMessage = result[result.length - 1];
-		if (lastMessage.role === ConversationRole.USER && lastMessage.content) {
-			(lastMessage.content as ContentBlock[]).push({
-				cachePoint: {
-					type: CachePointType.DEFAULT,
-					...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}),
-				},
-			});
+		const maxMessageBreakpoints = 2;
+		let marked = 0;
+		for (let idx = result.length - 1; idx >= 0 && marked < maxMessageBreakpoints; idx--) {
+			const message = result[idx];
+			if (message.content) {
+				(message.content as ContentBlock[]).push({
+					cachePoint: {
+						type: CachePointType.DEFAULT,
+						...(cacheRetention === "long" ? { ttl: CacheTTL.ONE_HOUR } : {}),
+					},
+				});
+				marked++;
+			}
 		}
 	}
 
