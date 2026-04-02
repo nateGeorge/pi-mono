@@ -257,13 +257,18 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
-			const anthropicStream = client.messages.stream({ ...params, stream: true }, { signal: options?.signal });
+			let anthropicStream = client.messages.stream({ ...params, stream: true }, { signal: options?.signal });
 			stream.push({ type: "start", partial: output });
 
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
 
-			for await (const event of anthropicStream) {
+			let streamRetryCount = 0;
+			const MAX_STREAM_RETRIES = 2;
+
+			while (streamRetryCount <= MAX_STREAM_RETRIES) {
+				try {
+				for await (const event of anthropicStream) {
 				if (event.type === "message_start") {
 					output.responseId = event.message.id;
 					// Capture initial token usage from message_start event
@@ -418,6 +423,40 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 					calculateCost(model, output.usage);
 				}
 			}
+
+			// Stream completed successfully, break out of retry loop
+			break;
+				} catch (streamError) {
+					const errorMsg = streamError instanceof Error ? streamError.message : String(streamError);
+					const isRetryable =
+						errorMsg.includes("Unexpected event order") ||
+						errorMsg.includes("after array element") ||
+						errorMsg.includes("Expected ',' or") ||
+						errorMsg.includes("in JSON at position");
+
+					if (isRetryable && streamRetryCount < MAX_STREAM_RETRIES && !options?.signal?.aborted) {
+						streamRetryCount++;
+						stream.push({
+							type: "text_delta" as any,
+							contentIndex: 0,
+							delta: `\n[Stream error: ${errorMsg}. Retrying (${streamRetryCount}/${MAX_STREAM_RETRIES})...]\n`,
+							partial: output,
+						});
+
+						// Reset state for retry
+						output.content = [];
+						blocks.length = 0;
+						output.stopReason = undefined as any;
+
+						// Re-create the stream for retry
+						anthropicStream = client.messages.stream({ ...params, stream: true }, { signal: options?.signal });
+						continue;
+					}
+
+					// Not retryable or exhausted retries — re-throw to outer catch
+					throw streamError;
+				}
+			} // end while retry loop
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
