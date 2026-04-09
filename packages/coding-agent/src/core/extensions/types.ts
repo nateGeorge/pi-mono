@@ -466,6 +466,8 @@ export interface SessionForkEvent {
 /** Fired before context compaction (can be cancelled or customized) */
 export interface SessionBeforeCompactEvent {
 	type: "session_before_compact";
+	/** "manual" when user runs /compact, "auto" when triggered automatically */
+	reason: "manual" | "auto";
 	preparation: CompactionPreparation;
 	branchEntries: SessionEntry[];
 	customInstructions?: string;
