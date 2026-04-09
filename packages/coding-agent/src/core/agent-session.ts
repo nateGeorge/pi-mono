@@ -1613,6 +1613,7 @@ export class AgentSession {
 			if (this._extensionRunner?.hasHandlers("session_before_compact")) {
 				const result = (await this._extensionRunner.emit({
 					type: "session_before_compact",
+					reason: "manual",
 					preparation,
 					branchEntries: pathEntries,
 					customInstructions,
@@ -1870,6 +1871,7 @@ export class AgentSession {
 			if (this._extensionRunner?.hasHandlers("session_before_compact")) {
 				const extensionResult = (await this._extensionRunner.emit({
 					type: "session_before_compact",
+					reason: "auto",
 					preparation,
 					branchEntries: pathEntries,
 					customInstructions: undefined,
