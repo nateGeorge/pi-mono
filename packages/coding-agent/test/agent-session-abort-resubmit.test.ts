@@ -174,14 +174,6 @@ describe("AgentSession resubmit during abort unwind", () => {
 
 		await firstPrompt.catch(() => {});
 		await resubmit;
-		console.log(
-			"SEEN",
-			JSON.stringify(seenUserTexts),
-			"PENDING",
-			session.pendingMessageCount,
-			"STREAMING",
-			session.isStreaming,
-		);
 
 		// The resubmitted text must reach the model as its own run, not sit in a queue
 		// the aborted run never drains.
@@ -202,5 +194,29 @@ describe("AgentSession resubmit during abort unwind", () => {
 
 		await session.abort();
 		await firstPrompt.catch(() => {});
+	});
+
+	it("delivers both messages when two prompts race in the post-abort gap", async () => {
+		await createSession();
+
+		const firstPrompt = session.prompt("First message");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(session.isStreaming).toBe(true);
+
+		void session.abort();
+		await firstPrompt.catch(() => {});
+		// Session is idle but the window between idle and the next run start is
+		// exactly where overlapping prompt() calls used to race: the loser hit
+		// "Agent is already processing a prompt" and its text was dropped.
+		// Both arrive in the same gap; each passes a behavior, as interactive quick-Enter does.
+		const a = session.prompt("Message A", { streamingBehavior: "steer" });
+		const b = session.prompt("Message B", { streamingBehavior: "steer" });
+		await a.catch(() => {});
+		await b.catch(() => {});
+
+		expect(session.pendingMessageCount).toBe(0);
+		const delivered = seenUserTexts.flat();
+		expect(delivered).toContain("Message A");
+		expect(delivered).toContain("Message B");
 	});
 });

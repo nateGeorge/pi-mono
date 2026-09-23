@@ -336,6 +336,11 @@ export class AgentSession {
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
+	// Set from the top of prompt() until _runAgentPrompt sets _isAgentRunActive
+	// (or prompt() exits early). A concurrent prompt() that observes a foreign
+	// claim queues behind this one instead of racing agent.prompt(), which
+	// throws "Agent is already processing a prompt" and drops the text.
+	private _promptStartClaim: object | undefined = undefined;
 	private _agentRunAbortRequested = false;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
@@ -1468,6 +1473,7 @@ export class AgentSession {
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		this._agentRunAbortRequested = false;
 		this._isAgentRunActive = true;
+		this._promptStartClaim = undefined;
 		try {
 			await this.agent.prompt(messages);
 			while (!this._agentRunAbortRequested) {
@@ -1608,6 +1614,8 @@ export class AgentSession {
 			this._deferredSettledActions.push(async () => await this.prompt(text, options));
 			return;
 		}
+		const myClaim: object = {};
+		this._promptStartClaim = myClaim;
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
@@ -1620,6 +1628,7 @@ export class AgentSession {
 				if (handled) {
 					// Extension command executed, no prompt to send
 					preflightResult?.(true);
+					if (this._promptStartClaim === myClaim) this._promptStartClaim = undefined;
 					return;
 				}
 			}
@@ -1639,6 +1648,7 @@ export class AgentSession {
 			);
 			if (!processedInput) {
 				preflightResult?.(true);
+				if (this._promptStartClaim === myClaim) this._promptStartClaim = undefined;
 				return;
 			}
 			const { text: currentText, images: currentImages } = processedInput;
@@ -1650,11 +1660,13 @@ export class AgentSession {
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 			}
 
-			// If streaming, queue via steer() or followUp() based on option
-			if (this.isStreaming && !this.agent.signal?.aborted) {
+			// If streaming (or another prompt() is between its start and its run
+			// start), queue via steer() or followUp() based on option
+			if ((this.isStreaming || this._promptStartClaim !== myClaim) && !this.agent.signal?.aborted) {
 				const behavior = this._requireStreamingBehavior(options);
 				await this._queueByStreamingBehavior(behavior, expandedText, currentImages);
 				preflightResult?.(true);
+				if (this._promptStartClaim === myClaim) this._promptStartClaim = undefined;
 				return;
 			}
 			if (this.isStreaming) {
@@ -1665,9 +1677,10 @@ export class AgentSession {
 				// instead (unless another caller restarted the agent first, in which case queue
 				// behind that run normally).
 				await this.waitForIdle();
-				if (this.isStreaming) {
+				if (this.isStreaming || this._promptStartClaim !== myClaim) {
 					await this._queueByStreamingBehavior(behavior, expandedText, currentImages);
 					preflightResult?.(true);
+					if (this._promptStartClaim === myClaim) this._promptStartClaim = undefined;
 					return;
 				}
 			}
@@ -1754,11 +1767,13 @@ export class AgentSession {
 			this._runSystemPromptOptions = result.systemPromptOptions;
 			if (updateMessage) messages.unshift(updateMessage);
 		} catch (error) {
+			if (this._promptStartClaim === myClaim) this._promptStartClaim = undefined;
 			preflightResult?.(false);
 			throw error;
 		}
 
 		if (!messages) {
+			if (this._promptStartClaim === myClaim) this._promptStartClaim = undefined;
 			return;
 		}
 
